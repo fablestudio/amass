@@ -37,5 +37,7 @@ def show_image(img_ndarray):
     ax.imshow(img)
     plt.axis('off')
 
+    plt.show()
+
     # fig.canvas.draw()
     # return True
