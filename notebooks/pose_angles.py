@@ -2,10 +2,12 @@ import sys, os
 import torch
 import numpy as np
 import math
+from smplx.lbs import batch_rodrigues
 from human_body_prior.tools.omni_tools import copy2cpu as c2c
 from human_body_prior.body_model.body_model import BodyModel
 from human_body_prior.tools.omni_tools import apply_mesh_tranfsormations_
 
+RAD2DEG = 57.295779513
 
 """
 jointmap
@@ -36,7 +38,6 @@ jointmap
 """
 
 
-
 def normalize(vector):
     norm = np.linalg.norm(vector, axis=-1,keepdims=True)
     if norm < 0.0001:
@@ -45,7 +46,7 @@ def normalize(vector):
 
 
 def angle_between(vector1, vector2):
-    return math.acos(np.dot(vector1, vector2))
+    return math.acos(np.dot(vector1, vector2)) * RAD2DEG
 
 
 def calculate_joint_vectors(joints, joint_children):
@@ -70,6 +71,8 @@ def calculate_joint_differences(ref_joint_vectors, posed_joint_vectors):
         joint_diffs.append(angle_between(ref, posed))
     return joint_diffs
 
+    #TODO Calculate matrix from vector, then convert to quaternion
+
 
 comp_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -88,6 +91,7 @@ joint_parents = bm.kintree_table[0]
 joint_children = [[] for i in range(22)] 
 for i in range(len(joint_parents)):
     parent = int(joint_parents[i])
+
     if (parent == -1):
         continue
     
@@ -96,9 +100,9 @@ for i in range(len(joint_parents)):
 
 
 # Reference pose
-ref_joints = c2c(bm().Jtr[0])
+ref_body = bm()
+ref_joints = c2c(ref_body.Jtr[0])
 ref_joint_vectors = calculate_joint_vectors(ref_joints, joint_children)
-print(ref_joint_vectors)
 
 
 # Animated pose
@@ -106,17 +110,28 @@ bdata = np.load(os.path.dirname(os.path.abspath(__file__)) + '/../body_data/Huma
 fId = 0 # frame id of the mocap sequence
 #body = bm()
 
+pose_body = torch.Tensor(bdata['poses'][fId:fId+1, 3:66]).to(comp_device)
+pose_hand = torch.Tensor(bdata['poses'][fId:fId+1, 66:]).to(comp_device)
+betas = torch.Tensor(bdata['betas'][:10][np.newaxis]).to(comp_device)
 body = bm(
-    pose_body=torch.Tensor(bdata['poses'][fId:fId+1, 3:66]).to(comp_device), 
-    pose_hand = torch.Tensor(bdata['poses'][fId:fId+1, 66:]).to(comp_device), 
-    betas=torch.Tensor(bdata['betas'][:10][np.newaxis]).to(comp_device))
+    pose_body=pose_body, 
+    pose_hand=pose_hand, 
+    betas=betas)
+
+full_pose = torch.cat([bm.root_orient, pose_body, pose_hand], dim=1)
+batch_size = max(betas.shape[0], full_pose.shape[0])
+rot_mats = batch_rodrigues(full_pose.view(-1, 3), dtype=bm.dtype).view([batch_size, -1, 3, 3])
 
 posed_joints = c2c(body.Jtr[0])
+posed_mats = c2c(body.rot_mats)
+print(rot_mats)
 posed_joint_vectors = calculate_joint_vectors(posed_joints, joint_children)
 
 
 # Calculate difference between animated and reference
 joint_diffs = calculate_joint_differences(ref_joint_vectors, posed_joint_vectors)
+print(joint_diffs)
+
 
 import trimesh
 from human_body_prior.tools.omni_tools import colors
@@ -143,4 +158,4 @@ body_mesh = trimesh.Trimesh(vertices=c2c(body.v[0]), faces=c2c(bm.f), vertex_col
 joints_mesh = points_to_spheres([posed_joints[40]], vc = colors['red'], radius=0.01)
 mv.set_static_meshes([body_mesh] + joints_mesh)
 body_image = mv.render(render_wireframe=True)
-show_image(body_image)
+#show_image(body_image)
